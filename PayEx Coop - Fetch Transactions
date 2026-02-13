@@ -1,0 +1,60 @@
+// ==UserScript==
+// @name         PayEx Coop - Fetch Last Year Transactions
+// @namespace    oscar
+// @version      1.0
+// @description  Fetch pxr-transactions for last year
+// @match        https://evc.payex.com/UserPortal/accounts/*
+// @grant        GM_registerMenuCommand
+// @grant        GM_xmlhttpRequest
+// @connect      evc.payex.com
+// ==/UserScript==
+
+(function () {
+	'use strict'
+
+	function getAccountId() {
+		const match = window.location.pathname.match(/\/accounts\/(\d+)/)
+		return match ? match[1] : null
+	}
+
+	function getLastYearRange() {
+		const now = new Date()
+		const lastYear = now.getFullYear() - 1
+		return {
+			fromDate: `${lastYear}-01-01`,
+			toDate: `${lastYear}-12-31`
+		}
+	}
+
+	function fetchTransactions() {
+		const accountId = getAccountId()
+		if (!accountId) {
+			alert('Could not determine account ID')
+			return
+		}
+
+		const { fromDate, toDate } = getLastYearRange()
+
+		const url = `/UserPortal/api/Account/${accountId}/pxr-transactions?` +
+			new URLSearchParams({
+				page: 1,
+				size: 1000,
+				fromDate,
+				toDate
+			})
+
+		fetch(url, { credentials: 'same-origin' })
+			.then(r => r.json())
+			.then(data => {
+				console.log('Transactions:', data)
+				alert('Transactions fetched. Check console.')
+			})
+			.catch(err => {
+				console.error(err)
+				alert('Request failed')
+			})
+	}
+
+	GM_registerMenuCommand('Fetch last year transactions', fetchTransactions)
+
+})()
