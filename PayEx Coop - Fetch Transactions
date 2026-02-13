@@ -1,0 +1,72 @@
+// ==UserScript==
+// @name         PayEx Coop - Fetch Yearly Transactions
+// @namespace    oscar
+// @version      1.0
+// @description  Fetch pxr-transactions for a selected year
+// @match        https://evc.payex.com/UserPortal/*
+// @grant        GM_registerMenuCommand
+// @grant        GM_xmlhttpRequest
+// @connect      evc.payex.com
+// ==/UserScript==
+
+(function () {
+	'use strict'
+
+	function getAccountId() {
+		const match = window.location.pathname.match(/\/accounts\/(\d+)/)
+		return match ? match[1] : null
+	}
+
+	function getYearRangeFromUser() {
+		const defaultYear = new Date().getFullYear() - 1
+		const input = window.prompt('Enter year (YYYY)', String(defaultYear))
+		if (input === null) return null
+
+		const year = Number.parseInt(input, 10)
+		if (!Number.isFinite(year) || input.trim().length !== 4) {
+			alert('Please enter a valid 4-digit year.')
+			return null
+		}
+
+		return {
+			fromDate: `${year}-01-01`,
+			toDate: `${year}-12-31`
+		}
+	}
+
+	function fetchTransactions(accountId) {
+		const range = getYearRangeFromUser()
+		if (!range) return
+
+		const { fromDate, toDate } = range
+
+		const url = `/UserPortal/api/Account/${accountId}/pxr-transactions?` +
+			new URLSearchParams({
+				page: 1,
+				size: 1000,
+				fromDate,
+				toDate
+			})
+
+		fetch(url, { credentials: 'same-origin' })
+			.then(r => r.json())
+			.then(data => {
+				console.log('Transactions:', data)
+				alert('Transactions fetched. Check console.')
+			})
+			.catch(err => {
+				console.error(err)
+				alert('Request failed')
+			})
+	}
+
+	GM_registerMenuCommand('Fetch transactions for year…', () => {
+		const accountId = getAccountId()
+		if (!accountId) {
+			alert('Navigate to an account page (…/accounts/{id}) before fetching transactions.')
+			return
+		}
+		fetchTransactions(accountId)
+	})
+
+})()
