@@ -47,10 +47,14 @@
 			if (typeof node === 'object') {
 				for (const key of Object.keys(node)) {
 					const val = node[key];
+					const k = key.toLowerCase();
 					const maybe =
-						(key.toLowerCase().includes('token') && extractTokenFromString(String(val))) ||
-						visit(val);
+						(k.includes('token') || k.includes('access'))
+							? extractTokenFromString(String(val))
+							: null;
 					if (maybe) return maybe;
+					const deeper = visit(val);
+					if (deeper) return deeper;
 				}
 			}
 			return null;
@@ -68,8 +72,7 @@
 		const raw = sessionStorage.getItem('kv.session');
 		if (!raw) return null;
 		const token = extractTokenFromJson(raw) || extractTokenFromString(raw);
-		if (token) return token;
-		return null;
+		return token || null;
 	};
 
 	const findTokenInStorage = (storage) => {
@@ -170,6 +173,14 @@
 		return null;
 	};
 
+	const scrollToBottom = () => {
+		try {
+			window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+		} catch {
+			window.scrollTo(0, document.body.scrollHeight);
+		}
+	};
+
 	const locateContentElements = async () => {
 		const main = await waitForElement(() => document.getElementById('main'));
 		if (!main) {
@@ -199,6 +210,7 @@
 		let clicks = 0;
 		while (showMoreButton.offsetParent !== null) {
 			showMoreButton.click();
+			scrollToBottom();
 			clicks += 1;
 			await sleep(250);
 		}
@@ -261,12 +273,12 @@
 				},
 				withCredentials: true,
 				onload: (res) => {
-					console.log('GMX status', res.status, res.responseHeaders);
-					if (res.status < 200 || res.status >= 300) {
-						console.warn('GET meta misslyckades', res.status, res.responseText);
-						resolve(null);
-						return;
-					}
+			console.log('GMX status', res.status, res.responseHeaders);
+			if (res.status < 200 || res.status >= 300) {
+				console.warn('GET meta misslyckades', res.status, res.responseText);
+				resolve(null);
+				return;
+			}
 					try {
 						const meta = JSON.parse(res.responseText);
 						console.log('Kivra: metadata', meta);
@@ -285,10 +297,11 @@
 	};
 
 	const fetchFileAndDownload = async ({ userId, fileId, meta, token }) => {
-		const fileKey = meta?.parts?.[0]?.key;
-		const fileName = formatFileName(meta, fileId);
+		const filePart = getFirstFilePart(meta);
+		const fileKey = filePart?.key;
+		const fileName = filePart?.name || formatFileName(meta, fileId);
 		if (!fileKey) {
-			console.warn('Meta saknar parts/key, avbryter filhämtning.');
+			console.warn('Meta saknar parts/active_parts key, avbryter filhämtning.', meta);
 			return;
 		}
 
@@ -358,11 +371,26 @@
 		return safe.endsWith('.pdf') ? safe : `${safe}.pdf`;
 	};
 
-		const dataUrlToBlob = (dataUrl) => {
-			if (!dataUrl.startsWith('data:')) {
-				console.warn('Förväntade data:-URL men fick något annat.');
-				return new Blob([]);
-			}
+	const getFirstFilePart = (meta) => {
+		// Prefer any part that has a downloadable key; skip HTML bodies
+		const fromParts =
+			Array.isArray(meta?.parts) &&
+			meta.parts.find((p) => p && typeof p === 'object' && p.key);
+		if (fromParts) return fromParts;
+
+		const fromActive =
+			Array.isArray(meta?.active_parts) &&
+			meta.active_parts.find((p) => p && typeof p === 'object' && p.key);
+		if (fromActive) return fromActive;
+
+		return null;
+	};
+
+	const dataUrlToBlob = (dataUrl) => {
+		if (!dataUrl.startsWith('data:')) {
+			console.warn('Förväntade data:-URL men fick något annat.');
+			return new Blob([]);
+		}
 		const [meta, base64] = dataUrl.split(',');
 		const mimeMatch = meta.match(/data:([^;]+)/);
 		const mime = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
