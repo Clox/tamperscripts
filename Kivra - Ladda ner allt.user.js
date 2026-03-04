@@ -205,10 +205,10 @@
 		return { main, contentList, showMore: showMoreButton };
 	};
 
-	const clickShowMoreUntilHidden = async (showMoreButton) => {
+	const clickShowMoreUntilHidden = async (showMoreButton, aborted = () => false) => {
 		if (!showMoreButton) return;
 		let clicks = 0;
-		while (showMoreButton.offsetParent !== null) {
+		while (!aborted() && showMoreButton.offsetParent !== null) {
 			showMoreButton.click();
 			scrollToBottom();
 			clicks += 1;
@@ -217,10 +217,16 @@
 		console.log(`Kivra: show-more dold efter ${clicks} klick.`);
 	};
 
+	let currentRunId = 0;
 	const loadAllLetters = async () => {
+		const runId = ++currentRunId;
+		const startPath = window.location.pathname;
+		const aborted = () => runId !== currentRunId || window.location.pathname !== startPath;
+
 		const { contentList, showMore } = await locateContentElements();
-		await clickShowMoreUntilHidden(showMore);
-		if (!contentList) return;
+		if (aborted()) return;
+		await clickShowMoreUntilHidden(showMore, aborted);
+		if (aborted() || !contentList) return;
 		await inspectFirstSection(contentList);
 	};
 
@@ -430,8 +436,8 @@
 			return;
 		}
 
-		// Already on inbox: run locate directly
-		sessionStorage.setItem(RESUME_KEY, '1');
+		// Already on inbox: run directly and clear any stale resume flag
+		sessionStorage.removeItem(RESUME_KEY);
 		void loadAllLetters();
 	};
 
