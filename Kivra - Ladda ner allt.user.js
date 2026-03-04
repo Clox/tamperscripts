@@ -360,7 +360,7 @@
 	const fetchFileAndDownload = async ({ userId, fileId, meta, token }) => {
 		const filePart = getFirstFilePart(meta);
 		const fileKey = filePart?.key;
-		const fileName = filePart?.name || formatFileName(meta, fileId);
+		const fileName = formatFileName(meta, fileId);
 		if (!fileKey) {
 			console.warn('Meta saknar parts/active_parts key, avbryter filhämtning.', meta);
 			return false;
@@ -416,16 +416,16 @@
 
 	const formatFileName = (meta, fileId) => {
 		const sender = meta?.sender_name || 'Okänd avsändare';
-		const subject = meta?.subject || 'Okänt ämne';
+		const subject = meta?.subject || meta?.title || 'Okänt ämne';
 		const date = (meta?.received_at || '').slice(0, 10) || 'okänt-datum';
 		const receiver = meta?.receiver_name || 'Okänd mottagare';
 
 		const parts = [sender, subject, date, receiver]
-			.map((p) => p.trim())
+			.map((p) => (p || '').trim())
 			.filter(Boolean);
 
 		const base = parts.join(' - ') || fileId || 'kivra-brev';
-		const safe = base.replace(/[\\/*?"<>:|]/g, '_').slice(0, 120);
+		const safe = base.replace(/[\\/*?"<>:|]/g, '_').slice(0, 160);
 		const filename = safe.endsWith('.pdf') ? safe : `${safe}.pdf`;
 		return filename.startsWith('Kivra - ') ? filename : `Kivra - ${filename}`;
 	};
