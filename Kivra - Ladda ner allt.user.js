@@ -401,13 +401,10 @@
 					}
 
 					const objectUrl = URL.createObjectURL(blob);
-					GM_download({
-						url: objectUrl,
-						name: fileName,
-						saveAs: false,
-						onload: () => URL.revokeObjectURL(objectUrl),
+					void downloadWithGM(objectUrl, fileName).then((ok) => {
+						URL.revokeObjectURL(objectUrl);
+						resolve(ok);
 					});
-					resolve(true);
 				},
 				onerror: (err) => {
 					console.error('Fel vid filhämtning', err);
@@ -446,6 +443,22 @@
 
 		return null;
 	};
+
+	const downloadWithGM = (url, name) =>
+		new Promise((resolve) => {
+			GM_download({
+				url,
+				name,
+				saveAs: false,
+				onload: () => resolve(true),
+				onerror: (err) => {
+					console.warn('GM_download error', err);
+					resolve(false);
+				},
+				ontimeout: () => resolve(false),
+				onabort: () => resolve(false),
+			});
+		});
 
 	const loadDownloadedSet = (userId) => {
 		try {
