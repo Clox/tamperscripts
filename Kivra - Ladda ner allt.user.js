@@ -286,7 +286,7 @@
 
 	const fetchFileAndDownload = async ({ userId, fileId, meta, token }) => {
 		const fileKey = meta?.parts?.[0]?.key;
-		const fileName = meta?.parts?.[0]?.name || suggestFileNameFromMeta(meta) || 'kivra-brev.pdf';
+		const fileName = formatFileName(meta, fileId);
 		if (!fileKey) {
 			console.warn('Meta saknar parts/key, avbryter filhämtning.');
 			return;
@@ -343,13 +343,19 @@
 		});
 	};
 
-	const suggestFileNameFromMeta = (meta) => {
-		const title = meta?.subject || meta?.sender_name || meta?.receiver_name;
-		if (title) {
-			const safe = title.replace(/[\\/*?"<>:|]/g, '_').slice(0, 80);
-			return `${safe}.pdf`;
-		}
-		return null;
+	const formatFileName = (meta, fileId) => {
+		const sender = meta?.sender_name || 'Okänd avsändare';
+		const subject = meta?.subject || 'Okänt ämne';
+		const date = (meta?.received_at || '').slice(0, 10) || 'okänt-datum';
+		const receiver = meta?.receiver_name || 'Okänd mottagare';
+
+		const parts = [sender, subject, date, receiver]
+			.map((p) => p.trim())
+			.filter(Boolean);
+
+		const base = parts.join(' - ') || fileId || 'kivra-brev';
+		const safe = base.replace(/[\\/*?"<>:|]/g, '_').slice(0, 120);
+		return safe.endsWith('.pdf') ? safe : `${safe}.pdf`;
 	};
 
 		const dataUrlToBlob = (dataUrl) => {
