@@ -217,52 +217,107 @@
 		console.log(`Kivra: show-more dold efter ${clicks} klick.`);
 	};
 
+	const ensureAllSectionsLoaded = async (contentList) => {
+		let lastCount = 0;
+		let stableRounds = 0;
+		for (let i = 0; i < 40; i += 1) {
+			scrollToBottom();
+			await sleep(300);
+			const count = contentList.querySelectorAll(':scope > section').length;
+			if (count === lastCount) {
+				stableRounds += 1;
+				if (stableRounds >= 3) break; // ~1s stable
+			} else {
+				stableRounds = 0;
+				lastCount = count;
+			}
+		}
+		console.log('Kivra: sektioner laddade', contentList.querySelectorAll(':scope > section').length);
+	};
+
 	let currentRunId = 0;
-	const loadAllLetters = async () => {
+	const loadAllLetters = async (userId) => {
 		const runId = ++currentRunId;
 		const startPath = window.location.pathname;
 		const aborted = () => runId !== currentRunId || window.location.pathname !== startPath;
+
+		const downloaded = loadDownloadedSet(userId);
+		const mode = chooseDownloadMode(userId, downloaded.size);
+		if (mode === 'cancel') return;
 
 		const { contentList, showMore } = await locateContentElements();
 		if (aborted()) return;
 		await clickShowMoreUntilHidden(showMore, aborted);
 		if (aborted() || !contentList) return;
-		await inspectFirstSection(contentList);
+		await ensureAllSectionsLoaded(contentList);
+		if (aborted()) return;
+		await inspectFirstSection(contentList, userId, mode, downloaded);
 	};
 
-	const inspectFirstSection = async (contentList) => {
-		const sections = Array.from(contentList.querySelectorAll(':scope > section'));
-		for (const section of sections) {
-			const fileId = extractFileId(section);
+	const inspectFirstSection = async (contentList, userId, mode, downloaded) => {
+		let processed = 0;
+		let okCount = 0;
+		let skippedExisting = 0;
+		let metaFail = 0;
+		let downloadFail = 0;
+		let tokenFail = 0;
+
+		const items = Array.from(contentList.querySelectorAll('[data-test-id^="content-list-item-"]'));
+		for (const item of items) {
+			const fileId = extractFileId(item);
 			if (!fileId) {
-				console.warn('Kunde inte läsa fileId från sektionen.');
-				break;
+				console.warn('Kunde inte läsa fileId från item.', item);
+				continue;
 			}
 
-			const userId = parseUrl().userId;
 			const token = getAuthToken();
 			if (!token) {
 				console.warn('Hittar ingen auth-token; kan inte hämta metadata.');
-				break;
+				tokenFail += 1;
+				continue;
 			}
 
-			const meta = await fetchMetadata({ userId, fileId, token });
+			if (mode === 'new' && downloaded.has(fileId)) {
+				console.log('Hoppar över redan nedladdad fil', fileId);
+				skippedExisting += 1;
+				continue;
+			}
+
+			processed += 1;
+
+			const meta = await fetchMetadata({ userId, fileId, token, fileIdForLog: fileId });
 			if (meta) {
-				await fetchFileAndDownload({ userId, fileId, meta, token });
+				const ok = await fetchFileAndDownload({ userId, fileId, meta, token });
+				if (ok) {
+					downloaded.add(fileId);
+					saveDownloadedSet(userId, downloaded);
+					okCount += 1;
+				} else {
+					downloadFail += 1;
+				}
+			} else {
+				metaFail += 1;
 			}
 			console.log('Kivra: hämtade metadata för', fileId);
-			break; // stop after first for now
+			// continue to next to catch remaining files
 		}
+
+		console.log(
+			`Kivra sammanfattning: bearbetade=${processed}, nedladdade=${okCount}, redan_nedladdade=${skippedExisting}, meta_fail=${metaFail}, download_fail=${downloadFail}, token_fail=${tokenFail}`
+		);
 	};
 
-	const extractFileId = (section) => {
-		const link = section.querySelector('a[href*="/content/"]');
+	const extractFileId = (node) => {
+		const fromAttr = node.getAttribute('data-test-id');
+		const attrMatch = fromAttr?.match(/content-list-item-([^-]+)$/);
+		if (attrMatch) return attrMatch[1];
+		const link = node.querySelector('a[href*="/content/"]');
 		if (!link) return null;
 		const match = link.getAttribute('href')?.match(/content\/([^/?#]+)/);
 		return match ? match[1] : null;
 	};
 
-	const fetchMetadata = async ({ userId, fileId, token }) => {
+	const fetchMetadata = async ({ userId, fileId, token, fileIdForLog }) => {
 		const url = `https://app.api.kivra.com/v3/user/${userId}/content/${fileId}`;
 
 		// Use GM_xmlhttpRequest to bypass Tampermonkey referrer stripping
@@ -281,7 +336,7 @@
 				onload: (res) => {
 			console.log('GMX status', res.status, res.responseHeaders);
 			if (res.status < 200 || res.status >= 300) {
-				console.warn('GET meta misslyckades', res.status, res.responseText);
+				console.warn('GET meta misslyckades', res.status, 'fileId=', fileIdForLog || fileId, res.responseText);
 				resolve(null);
 				return;
 			}
@@ -308,7 +363,7 @@
 		const fileName = filePart?.name || formatFileName(meta, fileId);
 		if (!fileKey) {
 			console.warn('Meta saknar parts/active_parts key, avbryter filhämtning.', meta);
-			return;
+			return false;
 		}
 
 		const rawUrl = `https://app.api.kivra.com/v1/user/${userId}/content/${fileId}/file/${fileKey}/raw`;
@@ -327,7 +382,7 @@
 				onload: (res) => {
 					console.log('GMX file status', res.status, res.responseHeaders);
 					if (res.status < 200 || res.status >= 300) {
-						console.warn('Filhämtning misslyckades', res.status);
+						console.warn('Filhämtning misslyckades', res.status, 'fileId=', fileId);
 						resolve(null);
 						return;
 					}
@@ -356,7 +411,7 @@
 				},
 				onerror: (err) => {
 					console.error('Fel vid filhämtning', err);
-					resolve(null);
+					resolve(false);
 				},
 			});
 		});
@@ -390,6 +445,43 @@
 		if (fromActive) return fromActive;
 
 		return null;
+	};
+
+	const loadDownloadedSet = (userId) => {
+		try {
+			const raw = localStorage.getItem(`kivra_downloads_${userId}`);
+			if (!raw) return new Set();
+			const arr = JSON.parse(raw);
+			return new Set(Array.isArray(arr) ? arr : []);
+		} catch {
+			return new Set();
+		}
+	};
+
+	const saveDownloadedSet = (userId, set) => {
+		try {
+			localStorage.setItem(`kivra_downloads_${userId}`, JSON.stringify(Array.from(set)));
+		} catch (e) {
+			console.warn('Kunde inte spara nedladdningslista', e);
+		}
+	};
+
+	const chooseDownloadMode = (userId, previousCount) => {
+		if (!previousCount) return 'all';
+		const input = window.prompt(
+			`Det finns ${previousCount} tidigare nedladdade filer för denna mottagare.\n` +
+				'Skriv 1 för att hämta bara nya\n' +
+				'Skriv 2 för att hämta alla\n' +
+				'Skriv 3 för att avbryta',
+			'1'
+		);
+		if (input === null) return 'cancel';
+		const trimmed = input.trim();
+		if (trimmed === '1') return 'new';
+		if (trimmed === '2') return 'all';
+		if (trimmed === '3') return 'cancel';
+		alert('Ogiltigt val. Avbryter.');
+		return 'cancel';
 	};
 
 	const dataUrlToBlob = (dataUrl) => {
@@ -438,7 +530,7 @@
 
 		// Already on inbox: run directly and clear any stale resume flag
 		sessionStorage.removeItem(RESUME_KEY);
-		void loadAllLetters();
+		void loadAllLetters(userId);
 	};
 
 	GM_registerMenuCommand('Ladda ner alla brev för aktuell mottagare', handleMenuClick);
@@ -448,7 +540,9 @@
 		if (!onInbox) return;
 		if (sessionStorage.getItem(RESUME_KEY) !== '1') return;
 		sessionStorage.removeItem(RESUME_KEY);
-		void loadAllLetters();
+		const { userId } = parseUrl();
+		if (!userId) return;
+		void loadAllLetters(userId);
 	};
 
 	if (document.readyState === 'loading') {
