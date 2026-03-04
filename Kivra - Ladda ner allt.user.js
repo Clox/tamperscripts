@@ -9,6 +9,7 @@
 // @grant        GM_download
 // @grant        unsafeWindow
 // @connect      app.api.kivra.com
+// @connect      *
 // ==/UserScript==
 
 (function () {
@@ -16,9 +17,10 @@
 
 	const EXPECTED_PATH = /^\/user\/([^/]+)\/inbox\/?$/;
 	const USER_ID_PATH = /^\/user\/([^/]+)/;
-	const POLL_INTERVAL_MS = 200;
+	const POLL_INTERVAL_MS = 120;
 	const POLL_TIMEOUT_MS = 8000;
 	const RESUME_KEY = 'kivra-download-resume';
+	const FAIL_FAST = true; // stop processing further items on first failure
 	const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 	const textEquals = (node, value) => node?.textContent?.trim() === value;
 	const firstText = (node, selector) => node?.querySelector(selector)?.textContent?.trim();
@@ -212,7 +214,7 @@
 			showMoreButton.click();
 			scrollToBottom();
 			clicks += 1;
-			await sleep(250);
+			await sleep(150);
 		}
 		console.log(`Kivra: show-more dold efter ${clicks} klick.`);
 	};
@@ -222,7 +224,7 @@
 		let stableRounds = 0;
 		for (let i = 0; i < 40; i += 1) {
 			scrollToBottom();
-			await sleep(300);
+			await sleep(150);
 			const count = contentList.querySelectorAll(':scope > section').length;
 			if (count === lastCount) {
 				stableRounds += 1;
@@ -261,12 +263,17 @@
 		let metaFail = 0;
 		let downloadFail = 0;
 		let tokenFail = 0;
+		const failures = [];
 
-		const items = Array.from(contentList.querySelectorAll('[data-test-id^="content-list-item-"]'));
+		const items = Array.from(
+			contentList.querySelectorAll('[data-test-id^="content-list-item-"]:not([data-test-id$="-menu"])')
+		);
 		for (const item of items) {
 			const fileId = extractFileId(item);
 			if (!fileId) {
-				console.warn('Kunde inte läsa fileId från item.', item);
+				console.warn('Kunde inte läsa fileId från item.', item, 'outerHTML=', item?.outerHTML);
+				failures.push({ type: 'no_file_id', itemHtml: item?.outerHTML || null });
+				if (FAIL_FAST) break;
 				continue;
 			}
 
@@ -294,9 +301,13 @@
 					okCount += 1;
 				} else {
 					downloadFail += 1;
+					failures.push({ type: 'download', fileId, meta });
+					if (FAIL_FAST) break;
 				}
 			} else {
 				metaFail += 1;
+				failures.push({ type: 'meta', fileId });
+				if (FAIL_FAST) break;
 			}
 			console.log('Kivra: hämtade metadata för', fileId);
 			// continue to next to catch remaining files
@@ -305,12 +316,27 @@
 		console.log(
 			`Kivra sammanfattning: bearbetade=${processed}, nedladdade=${okCount}, redan_nedladdade=${skippedExisting}, meta_fail=${metaFail}, download_fail=${downloadFail}, token_fail=${tokenFail}`
 		);
+		if (failures.length) {
+			console.warn('Kivra: detaljer om misslyckade poster', failures);
+		}
+		if (FAIL_FAST && failures.length) {
+			throw new Error(`Avbröt efter fel: ${failures[0].type} för ${failures[0].fileId || 'okänt id'}`);
+		}
 	};
 
 	const extractFileId = (node) => {
 		const fromAttr = node.getAttribute('data-test-id');
-		const attrMatch = fromAttr?.match(/content-list-item-([^-]+)$/);
-		if (attrMatch) return attrMatch[1];
+		if (fromAttr?.startsWith('content-list-item-')) {
+			const rest = fromAttr.replace(/^content-list-item-/, '');
+			const parts = rest.split('-');
+			// Ignore trailing status/menu/etc. segments
+			const tail = parts[parts.length - 1];
+			const suffixes = new Set(['status', 'menu', 'checkbox', 'avatar', 'meta']);
+			const baseParts = suffixes.has(tail) ? parts.slice(0, -1) : parts;
+			const candidate = baseParts.join('-');
+			if (candidate) return candidate;
+		}
+
 		const link = node.querySelector('a[href*="/content/"]');
 		if (!link) return null;
 		const match = link.getAttribute('href')?.match(/content\/([^/?#]+)/);
@@ -362,7 +388,14 @@
 		const fileKey = filePart?.key;
 		const fileName = formatFileName(meta, fileId);
 		if (!fileKey) {
-			console.warn('Meta saknar parts/active_parts key, avbryter filhämtning.', meta);
+			console.warn('Meta saknar parts/active_parts key, försöker HTML-body som fallback.', meta);
+			if (filePart?.body) {
+				const blob = new Blob([filePart.body], { type: filePart.content_type || 'text/html' });
+				const objectUrl = URL.createObjectURL(blob);
+				const ok = await downloadWithGM(objectUrl, fileName.replace(/\.pdf$/i, '.html'));
+				URL.revokeObjectURL(objectUrl);
+				return ok;
+			}
 			return false;
 		}
 
@@ -431,7 +464,7 @@
 	};
 
 	const getFirstFilePart = (meta) => {
-		// Prefer any part that has a downloadable key; skip HTML bodies
+		// Prefer any part that has a downloadable key; else fall back to first part with a body
 		const fromParts =
 			Array.isArray(meta?.parts) &&
 			meta.parts.find((p) => p && typeof p === 'object' && p.key);
@@ -442,8 +475,28 @@
 			meta.active_parts.find((p) => p && typeof p === 'object' && p.key);
 		if (fromActive) return fromActive;
 
+		const htmlOnly =
+			Array.isArray(meta?.parts) &&
+			meta.parts.find((p) => p && typeof p === 'object' && p.body);
+		if (htmlOnly) return htmlOnly;
+
 		return null;
 	};
+
+	const downloadViaAnchor = (url, name) =>
+		new Promise((resolve) => {
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = name;
+			a.rel = 'noopener';
+			a.style.display = 'none';
+			document.body.appendChild(a);
+			a.click();
+			setTimeout(() => {
+				a.remove();
+				resolve(true);
+			}, 0);
+		});
 
 	const downloadWithGM = (url, name) =>
 		new Promise((resolve) => {
@@ -454,9 +507,19 @@
 				onload: () => resolve(true),
 				onerror: (err) => {
 					console.warn('GM_download error', err);
-					resolve(false);
+					if (url.startsWith('blob:') || url.startsWith('data:')) {
+						void downloadViaAnchor(url, name).then(resolve);
+					} else {
+						resolve(false);
+					}
 				},
-				ontimeout: () => resolve(false),
+				ontimeout: () => {
+					if (url.startsWith('blob:') || url.startsWith('data:')) {
+						void downloadViaAnchor(url, name).then(resolve);
+					} else {
+						resolve(false);
+					}
+				},
 				onabort: () => resolve(false),
 			});
 		});
