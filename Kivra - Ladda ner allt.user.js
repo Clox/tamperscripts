@@ -426,7 +426,8 @@
 
 		const base = parts.join(' - ') || fileId || 'kivra-brev';
 		const safe = base.replace(/[\\/*?"<>:|]/g, '_').slice(0, 120);
-		return safe.endsWith('.pdf') ? safe : `${safe}.pdf`;
+		const filename = safe.endsWith('.pdf') ? safe : `${safe}.pdf`;
+		return filename.startsWith('Kivra - ') ? filename : `Kivra - ${filename}`;
 	};
 
 	const getFirstFilePart = (meta) => {
